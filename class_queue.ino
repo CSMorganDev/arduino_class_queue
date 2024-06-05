@@ -14,6 +14,8 @@
 
 Classroom classroom;
 
+int ticketnumber = 0;
+
 WiFiClient client;
 
 // Setup the MQTT client class by passing in the WiFi client and 
@@ -22,7 +24,7 @@ Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO
 
 // Setup a feed called‘feed’for publishing
 Adafruit_MQTT_Subscribe feed = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/" AIO_FEED_SUBSCRIBE);
-Adafruit_MQTT_Publish feed_u = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/" AIO_FEED);
+Adafruit_MQTT_Publish feed_u = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/" AIO_FEED_UPDATE);
 
 void setup() {
   Serial.begin(115200);
@@ -62,18 +64,26 @@ void loop() {
       const int pin_state = digitalRead(GPIO_SWITCH);
       Serial.println(pin_state);
       String msgtype = getMessageType((char *)feed.lastread);
-      if (msgtype == "update") {
+      if (msgtype == "add") {
         Student new_student = createStudentFromJson((char *)feed.lastread);        
         classroom.addStudentToQueue(new_student);
-        classroom.setCurrentStudentFromQueue();
+        publish_update();
+        classroom.printClassroomInfo();
       } else if (msgtype == "cancel") {
-        String student_number = extractStudentNumberFromJson((char *)feed.lastread);        
-        classroom.removeStudentByNumber(student_number);
+        String student_number = getStudentNumber((char *)feed.lastread);        
+        publish_cancel(student_number);
+        publish_update();     
+        classroom.printClassroomInfo(); 
+      } else if (msgtype == "next") {
+        String student_number = getStudentNumber((char *)feed.lastread);          
+        publish_next(student_number);
+        publish_update();
+        classroom.printClassroomInfo();
       }
-      Serial.println(classroom.queue_size);
-      classroom.printClassroomInfo();
-      mqtt_update(pin_state);
-      flash_led(pin_state);
+      //Serial.println(classroom.queue_size);
+      
+      //mqtt_update(pin_state);
+      //flash_led(pin_state);
     }
   }
 
@@ -113,7 +123,7 @@ void mqtt_update(const int pin_state) {
       Serial.println(F("OK!"));
     }
   */
-  publish_update();
+  //publish_update();
   //publish_cancel("20103560");
   //publish_next("20103560");
 }
@@ -122,23 +132,32 @@ void publish_update() {
   StaticJsonDocument<1024> doc;
   JsonObject root = doc.to<JsonObject>();
   root["messageType"] = "update";
+  root["currentName"] = classroom.current_name;
+  root["currentQuestion"] = classroom.current_question;
+  root["currentStudentNumber"] = classroom.current_student_number;
+  root["currentTicketNumber"] = std::to_string(classroom.current_ticket_number);
+  root["awayFromDesk"] = classroom.away_from_desk;
   JsonArray queueArray = root.createNestedArray("queue");
 
   for (int i = 0; i < classroom.queue_size; i++) {
     JsonObject jobj = queueArray.createNestedObject();
     jobj["name"] = classroom.queue[i].name;
     jobj["studentNumber"] = classroom.queue[i].student_number;
+    jobj["question"] = classroom.queue[i].question;
+    jobj["ticketNumber"] = std::to_string(classroom.queue[i].ticket_number);
   }
              
   char jsonBuffer[1024];
   size_t n = serializeJson(doc, jsonBuffer);
+  Serial.println(jsonBuffer);
+
       
   if (!feed_u.publish(jsonBuffer)) {
       Serial.println(F("Publish udpate failed"));
   } else {
     Serial.println(F("Publish update OK!"));
   }      
-  delay(10000);
+  //delay(10000);
 }
 
 void publish_cancel(const String &student_number) {
@@ -147,32 +166,31 @@ void publish_cancel(const String &student_number) {
   }
   Serial.print("The current queue size is ");
   Serial.println(classroom.queue_size);
-  classroom.printClassroomInfo();
 }
 
 void publish_next(const String &student_number) {
   if (classroom.setCurrentStudentByNumber(student_number)) {
-      publish_feed(student_number, "next");
+      classroom.removeStudentByNumber(student_number);
+      publish_feed(student_number, "next");      
   }  
-  classroom.printClassroomInfo();
 }
 
 void publish_feed(const String &student_number, const String &msgType) {
     StaticJsonDocument<1024> doc;
-    JsonObject root = doc.to<JsonObject>();
-    root["messageType"] = msgType;
-    JsonArray queue = root.createNestedArray("queue");
-    JsonObject q1 = queue.createNestedObject();
-    q1["studentNumber"] = student_number;
-              
-    char jsonBuffer[1024];
-    size_t n = serializeJson(doc, jsonBuffer);
-        
-    if (!feed_u.publish(jsonBuffer)) {
-        Serial.println(F("Publish failed"));
-    } else {
-      Serial.println(F("Publish OK!"));
-    }    
+  JsonObject root = doc.to<JsonObject>();
+  root["messageType"] = msgType;
+  root["studentNumber"] = student_number;
+             
+  char jsonBuffer[1024];
+  size_t n = serializeJson(doc, jsonBuffer);
+  Serial.println(jsonBuffer);
+
+      
+  if (!feed_u.publish(jsonBuffer)) {
+      Serial.println(F("Publish failed"));
+  } else {
+    Serial.println(F("Publish OK!"));
+  }         
 }
 
 void MQTT_connect() {
@@ -214,6 +232,20 @@ String getMessageType(const String& jsonString) {
     return msgtype;
 }
 
+String getStudentNumber(const String& jsonString) {
+  DynamicJsonDocument doc(1024);
+
+    // Parse the JSON string
+    DeserializationError error = deserializeJson(doc, jsonString, DeserializationOption::NestingLimit(100));
+    if (error) {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+        return "error" ; 
+    }
+    const char* student_number = doc["studentNumber"];
+    return student_number;
+}
+
 Student createStudentFromJson(const String& jsonString) {
     // Allocate a temporary JsonDocument
     DynamicJsonDocument doc(1024);
@@ -230,20 +262,15 @@ Student createStudentFromJson(const String& jsonString) {
     String name;
     String student_number;
     String question;
-    String ticket_number;
-
-    JsonArray queueArray = doc["queue"];
-    for (int i = 0; i < queueArray.size(); i++) {
-      JsonObject jobj = queueArray[i];
-
-      name = jobj["name"].as<String>();
-      student_number = jobj["studentNumber"].as<String>();
-      question = jobj["question"].as<String>();
-      ticket_number = jobj["ticketNumber"].as<String>();      
-    }
+    int ticket_number;
+    
+      name = doc["student"]["name"].as<String>();
+      student_number = doc["student"]["studentNumber"].as<String>();
+      question = doc["student"]["question"].as<String>();
+      ticketnumber++;
 
     // Create and return the Student object
-    return Student(name, student_number, question);
+    return Student(name, student_number, question, ticketnumber);
 }
 
 String extractStudentNumberFromJson(const String& jsonString) {
