@@ -50,6 +50,10 @@ public:
     }
 
     bool setCurrentStudentByNumber(const String& student_number) {
+      if (student_number == "") {
+        removeCurrentStudent();
+        return true;
+      }
         for (int i = 0; i < queue_size; ++i) {
             if (queue[i].student_number == student_number) {
                 current_name = queue[i].name;
@@ -74,6 +78,27 @@ public:
         Serial.println("Student not found and not removed!");
         return false;
     }
+
+    bool removeCurrentStudentByNumber(const String& student_number) {                
+        if (current_student_number == student_number) {
+            Serial.println("Removing currnet student...");
+            current_name = "";
+            current_student_number = "";
+            current_ticket_number = 0;
+            current_question = "";
+            return true;
+        }
+        Serial.println("Student not found and current not changed!");
+        return false;
+    }
+
+    void removeCurrentStudent() {                
+        Serial.println("Removing currnet student...");
+        current_name = "";
+        current_student_number = "";
+        current_ticket_number = 0;
+        current_question = "";
+    }
     
     void deleteElement(Student array[], int &size, int index) {
         if (index < 0 || index >= size) {
@@ -88,6 +113,10 @@ public:
 
         // Decrease size
         size--;
+    }
+
+    void toggle_away() {
+      away_from_desk = !away_from_desk;
     }
         
     void printClassroomInfo() const {

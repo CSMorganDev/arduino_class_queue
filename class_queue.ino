@@ -1,16 +1,15 @@
-#include <driver/gpio.h>
-#include <driver/rtc_io.h>
 #include <WiFi.h>
 #include <Adafruit_MQTT.h>
 #include <Adafruit_MQTT_Client.h>
 #include <ArduinoJson.h>
 #include "config.h"
 #include "classroom.h"
+#include <Adafruit_GFX.h>
+#include <P3RGB64x32MatrixPanel.h>
+#include <Fonts/Picopixel.h>
 
-#define GPIO_LED_GREEN  GPIO_NUM_18   /* Briefly flash if door is closed */
-#define GPIO_LED_RED    GPIO_NUM_19   /* Briefly flash if door is open */
-
-#define GPIO_SWITCH     GPIO_NUM_15   /* Door switch connected to this GPIO */
+// constructor with default pin wiring
+P3RGB64x32MatrixPanel matrix;
 
 Classroom classroom;
 
@@ -29,27 +28,59 @@ Adafruit_MQTT_Publish feed_u = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds
 void setup() {
   Serial.begin(115200);
 
-  /* LED outputs. */
-  gpio_set_direction(GPIO_LED_GREEN, GPIO_MODE_OUTPUT);
-  gpio_set_direction(GPIO_LED_RED, GPIO_MODE_OUTPUT);
-
-  rtc_gpio_deinit(GPIO_SWITCH);
-  const int pin_state = digitalRead(GPIO_SWITCH);
-  flash_led(pin_state);
-  delay(10);
-
   // Connect to WiFi
   wifi_connect();
 
   // Connect to MQTT broker
   mqtt.subscribe(&feed);
-  flash_led(pin_state);
-
-  /* Make sure to pull up the sensor input. */
-  rtc_gpio_pullup_en(GPIO_SWITCH);
-
+  
   classroom.printClassroomInfo();
 
+  
+  matrix.begin();  // setup the LED matrix
+  display_new_ticket();
+}
+
+void display_new_ticket() {
+  matrix.fillScreen(0);
+
+  matrix.setTextColor(matrix.color444(1, 0, 0));
+
+  //matrix.setFont(&Picopixel);
+  
+  if (classroom.current_ticket_number == 0) {
+    matrix.setCursor(2, 2);
+    matrix.printf("Please");
+    matrix.setCursor(2, 11);
+    matrix.printf("Wait...");
+  } else {
+    // Extract the first 10 characters
+    String name = classroom.current_name.substring(0, 10);
+    String student_number = classroom.current_student_number.substring(0, 10);
+    matrix.setCursor(2, 2);
+    matrix.printf("%03d", classroom.current_ticket_number);
+    matrix.setCursor(2, 11);
+    matrix.printf("%s", name);
+    matrix.setCursor(2, 21);
+    matrix.printf("%s", student_number);
+  }
+  matrix.swapBuffer();  // display the image written to the buffer
+}
+
+void display_away() {
+  matrix.fillScreen(0);
+
+  matrix.setTextColor(matrix.color444(1, 0, 0));
+
+  //matrix.setFont(&Picopixel);
+  matrix.setCursor(2, 2);
+  matrix.printf("Away");
+  matrix.setCursor(2, 11);
+  matrix.printf("From");
+  matrix.setCursor(2, 21);
+  matrix.printf("Desk");
+
+  matrix.swapBuffer();  // display the image written to the buffer
 }
 
 void loop() {
@@ -61,8 +92,8 @@ void loop() {
     if (subscription == &feed) {
       Serial.print(F("Got: "));
       Serial.println((char *)feed.lastread);
-      const int pin_state = digitalRead(GPIO_SWITCH);
-      Serial.println(pin_state);
+      
+      
       String msgtype = getMessageType((char *)feed.lastread);
       if (msgtype == "add") {
         Student new_student = createStudentFromJson((char *)feed.lastread);        
@@ -78,24 +109,29 @@ void loop() {
         String student_number = getStudentNumber((char *)feed.lastread);          
         publish_next(student_number);
         publish_update();
+        display_new_ticket();
         classroom.printClassroomInfo();
       }
-      //Serial.println(classroom.queue_size);
-      
-      //mqtt_update(pin_state);
-      //flash_led(pin_state);
+      else if (msgtype == "fetch") {
+        publish_update();
+        classroom.printClassroomInfo();
+      }
+      else if (msgtype == "away") {
+        classroom.toggle_away();
+        publish_update();
+        if(classroom.away_from_desk) {
+          display_away();
+        } else {
+          display_new_ticket();
+        }
+        classroom.printClassroomInfo();
+      }
+      //Serial.println(classroom.queue_size);         
     }
   }
 
 }
 
-void flash_led(const int pin_state) {
-  gpio_set_level(pin_state ? GPIO_LED_RED : GPIO_LED_GREEN, 1);
-  gpio_set_level(pin_state ? GPIO_LED_GREEN : GPIO_LED_RED, 0);
-  delay(50);
-  gpio_set_level(GPIO_LED_RED, 0);
-  gpio_set_level(GPIO_LED_GREEN, 0);
-}
 
 void wifi_connect() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -110,22 +146,6 @@ void wifi_connect() {
   Serial.println("WiFi connected");
   Serial.print("IP address: "); 
   Serial.println(WiFi.localIP());
-}
-
-void mqtt_update(const int pin_state) {
-  MQTT_connect();
-  /*
-  Adafruit_MQTT_Publish feed_u = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/" AIO_FEED);
-
-    if (!feed_u.publish((uint32_t)pin_state)) {
-      Serial.println(F("Failed"));
-    } else {
-      Serial.println(F("OK!"));
-    }
-  */
-  //publish_update();
-  //publish_cancel("20103560");
-  //publish_next("20103560");
 }
 
 void publish_update() {    
@@ -162,6 +182,7 @@ void publish_update() {
 
 void publish_cancel(const String &student_number) {
   if (classroom.removeStudentByNumber(student_number)) {
+      classroom.removeCurrentStudentByNumber(student_number);
       publish_feed(student_number, "cancel");
   }
   Serial.print("The current queue size is ");
@@ -170,8 +191,10 @@ void publish_cancel(const String &student_number) {
 
 void publish_next(const String &student_number) {
   if (classroom.setCurrentStudentByNumber(student_number)) {
+    if (student_number != ""){
       classroom.removeStudentByNumber(student_number);
-      publish_feed(student_number, "next");      
+    }
+    publish_feed(student_number, "next");      
   }  
 }
 
