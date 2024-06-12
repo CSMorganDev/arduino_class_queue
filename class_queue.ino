@@ -42,6 +42,9 @@ void setup() {
 }
 
 void display_new_ticket() {
+  if (classroom.away_from_desk) {
+    return;
+  }
   matrix.fillScreen(0);
 
   matrix.setTextColor(matrix.color444(1, 0, 0));
@@ -108,6 +111,9 @@ void loop() {
       } else if (msgtype == "next") {
         String student_number = getStudentNumber((char *)feed.lastread);          
         publish_next(student_number);
+        if (classroom.away_from_desk && student_number != "") {
+          classroom.away_from_desk = false;
+        }
         publish_update();
         display_new_ticket();
         classroom.printClassroomInfo();
